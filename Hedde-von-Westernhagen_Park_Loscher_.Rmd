@@ -1,0 +1,296 @@
+---
+title: "MLM Assignment 2"
+author: 
+- "Emilia Löscher" 
+- "Christine Hedde-von-Westernhagen"
+- "Kyuri Park"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: pdf_document
+geometry: margin=0.7in
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggpubr)
+library(pander)
+
+library(lme4)
+library(lmerTest)
+
+```
+
+
+## Data Description
+In this assignment, we analyze the `curran_wide.csv` data, which contains the information about the age, antisocial behavior, reading skills, emotional support, cognitive stimulation, and mother's age of 221 sampled children. Antisocial behavior and reading skills are measured over 4 occasions. In this analysis, we do not use children's age and emotional support variables.
+
+The (pre-processed) data specifics are as follows:
+
+ * `id`: children id
+ * `time`: measurement occasion ranging from 0 to 3 
+ * `anti`: antisocial behavior (time-variant)
+ * `read`: reading recognition skills (time-variant & grand-mean centered)
+ * `momage`: mother's age measured at the first occasion (time-invariant & grand-mean centered)
+ * `homecog`: cognitive stimulation measured at the first occasion (time-invariant & grand-mean centered)
+ 
+## 1. Convert the wide data file into a long format. Check the data and recode if necessary.
+```{r, echo=FALSE}
+## load the data
+curran_wide <- read.csv("curran_wide.csv")
+## check the wide data
+head(tibble(curran_wide))
+
+## prepare the data
+curran_long <- curran_wide %>% 
+  # not using homeo and childs' gender
+  select(-c(homeemo,sex)) %>% 
+  # convert it to a long format
+  pivot_longer(!c(id, momage, homecog), names_to = c(".value", "time"),
+               names_pattern = "(anti|read)(.)")  %>% 
+  # re-code time from 1:4 to 0:3, and grand-mean center 'read', 'momage' and 'homecog'
+  mutate(time = as.numeric(time) - 1, read = read - mean(read), 
+         momage = momage - mean(momage), homecog = homecog - mean(homecog)) %>% 
+  # re-order the columns
+  relocate(time, anti, read, .after=id)
+
+## check the long formatted data
+head(curran_long)
+
+summed.dat <- psych::describe(curran_long)[,-c(1,6,7,10)] 
+panderOptions('round',2)
+pander(summed.dat, caption="Descriptive statistics")
+```
+
+
+### • Check the linearity assumption, report and include plots.
+
+### • Check for outliers (don’t perform analyses, just look in the scatterplots), report.
+
+```{r hist, echo=FALSE, fig.height =2, fig.width=5, fig.align='center'}
+My_Theme = theme(
+  plot.title = element_text(size=11, hjust=0.5),
+  axis.title.x = element_text(size = 10),
+  axis.title.y = element_text(size = 10))
+
+ggplot(curran_long, aes(x=anti)) +
+  geom_histogram(binwidth=1, fill="#69b3a2", color="#e9ecef", alpha=0.9) +
+  theme_minimal() +
+  xlab("antisocial behavior") +
+  ggtitle("Distribution of antisocial behavior") + My_Theme
+```
+```{r boxplots, echo=FALSE, fig.height=3, fig.width=8, fig.align='center'}
+
+box1 <- ggplot(curran_long, aes(y=anti)) + geom_boxplot() + 
+  theme_minimal() + labs(title = "antisocial behavior", y="") + 
+  coord_flip() + My_Theme
+
+box2 <- ggplot(curran_long, aes(y=read)) + geom_boxplot() + 
+  theme_minimal() + labs(title = "reading recognition", y ="") + 
+  coord_flip()+ My_Theme
+box3 <- ggplot(curran_long, aes(y=momage)) + geom_boxplot() + 
+  theme_minimal() + labs(title = "mother's aga", y = "")+ 
+  coord_flip()+ My_Theme
+box4 <- ggplot(curran_long, aes(y=homecog)) + geom_boxplot() + 
+  theme_minimal() + labs(title = "cognitive stimulation", y = "")+ 
+  
+  coord_flip()+ My_Theme
+
+ggarrange(box1, box2, box3, box4, nrow=2, ncol=2)
+
+```
+
+
+```{r scatterplots, echo=FALSE, fig.height=3, fig.width=8, message = FALSE}
+## check for linearity and outliers
+
+## level1 
+p1 <- ggplot(curran_long,
+       aes(x = time, y = anti)) +
+  geom_jitter(shape=1, cex=0.5) +
+  geom_smooth(method = "lm",
+              aes(color = "linear"),
+              se = FALSE) +
+  geom_smooth(method = "lm",
+              formula = y ~ x + I(x^2),
+              aes(color = "quadratic"),
+              se = FALSE) +
+  theme_minimal() +
+  xlab("Time") +
+  ylab("Antisocial behavior")+
+  ggtitle("Level 1 (occasion level)")+
+  My_Theme
+
+p2 <- ggplot(curran_long,
+       aes(x = read, y = anti)) +
+  geom_point(shape=1, cex=0.5) +
+  geom_smooth(method = "lm",
+              aes(color = "linear"),
+              se = FALSE) +
+  geom_smooth(method = "lm",
+              formula = y ~ x + I(x^2),
+              aes(color = "quadratic"),
+              se = FALSE) +
+  theme_minimal() +
+  xlab("Reading recognition") +
+  ylab("Antisocial behavior")+
+  ggtitle("Level 1 (occasion level)") + My_Theme
+
+## level2 
+p3 <- curran_long %>% 
+  group_by(id) %>% 
+  # aggregate the exam scores and store'em as : Examscore_aggr
+  mutate(aggregated_anti = mean(anti)) %>% 
+  ggplot(aes(x = momage, y = aggregated_anti)) +
+    geom_point(shape=1, cex=0.5) +
+  geom_smooth(method = "lm",
+              aes(color = "linear"),
+              se = FALSE) +
+  geom_smooth(method = "lm",
+              formula = y ~ x + I(x^2),
+              aes(color = "quadratic"),
+              se = FALSE) +
+  theme_minimal()+
+  xlab("Mother's age") +
+  ylab("Avg. antisocial behavior over time")+
+  ggtitle("Level 2 (person level)") + My_Theme
+
+p4 <- curran_long %>% 
+  group_by(id) %>% 
+  # aggregate the exam scores and store'em as : Examscore_aggr
+  mutate(aggregated_anti = mean(anti)) %>% 
+  ggplot(aes(x = homecog, y = aggregated_anti)) +
+    geom_point(shape=1, cex=0.5) +
+  geom_smooth(method = "lm",
+              aes(color = "linear"),
+              se = FALSE) +
+  geom_smooth(method = "lm",
+              formula = y ~ x + I(x^2),
+              aes(color = "quadratic"),
+              se = FALSE) +
+  theme_minimal()+
+  xlab("cognitivie stimulation") +
+  ylab("Avg. antisocial behavior over time")+
+  ggtitle("Level 2 (person level)")+ My_Theme
+
+ggarrange(p1, p2, ncol=2, common.legend = TRUE, legend="bottom")
+ggarrange(p3, p4, ncol=2, common.legend = TRUE, legend="bottom")
+```
+
+
+## 2. Answer the question: should you perform a multilevel analysis?
+### • What is the mixed model equation?
+ -- Mixed Model Equation
+$$ y_{ti} = \beta_{00} + u_{0i} + e_{ij} $$
+
+### • Provide and interpret the relevant results.  
+```{r}
+## model 1: random intercept model ((base model to compute ICC))
+model1 <- lmer(anti ~ 1 + (1|id), REML = FALSE, data= curran_long)
+summary(model1)
+```
+
+
+### • What is the intraclass correlation?
+The intraclass correlation ($\rho$) is calculated as follows: 
+$$ \rho = \frac{\sigma^2_{u0}}{\sigma^2_{u0} + \sigma^2_e} $$ 
+As shown below, the intraclass correlation equals to 0.476 in this case, which is deemed to be large.
+```{r}
+ICC <- 1.579/(1.579+1.741)
+cat("ICC =", ICC)
+```
+
+
+### • What is your conclusion regarding the overall question regarding the necessity of performing a multilevel analysis?  
+Yes we should perform the multilevel analysis in this case, because not only the data structure is nested (i.e., multiple measurements within each individual), but also the difference between individuals accounts for about *48%* of the total variance. In other words, the intraclass correlation -- ICC: the proportion of the total variance explained by the grouping structure -- is *0.476*, which is high enough that the multilevel analysis is warranted.
+
+## 3. Add the time-varying predictor(s).
+### • Provide and interpret the relevant results and provide your overall conclusion.
+The time-varying predictor, `read` is not significant.
+```{r}
+## model2: add time predictor ((benchmark model for R2))
+model2 <- lmer(anti ~ 1 + time + (1|id), REML = FALSE, data= curran_long)
+summary(model2)
+anova(model2, model1)
+
+## model3: add time-varying predictor, read
+# center the predictor, read
+curran_long$read <- curran_long$read - mean(curran_long$read)
+
+model3 <- lmer(anti ~ 1 + time + read + (1|id), REML = FALSE, data= curran_long)
+summary(model3)
+anova(model3, model2)
+```
+
+
+## 4. On which level or levels can you expect explained variance?
+### • Calculate and interpret the explained variances.
+We can expect the explained variances ($R^2$) at both occasion (level 1) and person level (level 2), as the level 1 predictor can explain the variances in both levels. The computed $R^2$ values for each level are:  
+
+ - $R^2_{occasion}$ = -0.0024   ??????????  
+ - $R^2_{person}$ = 0.0101  
+```{r}
+m2var.lv1 <- 1.689
+m2var.lv2 <- 1.592
+m3var.lv1 <- 1.693
+m3var.lv2 <- 1.576
+
+## explained variance at level 1 (occasion level)
+R2.lv1 <- (m2var.lv1 - m3var.lv1) / m2var.lv1
+## explained variance at level 2 (person level)
+R2.lv2 <- (m2var.lv2 - m3var.lv2) / m2var.lv2
+cat("Explained variance at the occasion level =", round(R2.lv1,4) , 
+    "\n", "Explained variance at the person level =", round(R2.lv2,4))
+```
+
+
+## 5. Add the time invariant predictor(s) to the model.
+### • Provide and interpret the relevant results and provide your overall conclusion.
+
+```{r}
+# model4: add time-invariant predictors, momage & homecog
+model4 <- lmer(anti ~ 1 + time + read + momage + homecog + (1|id), REML = FALSE, data= curran_long)
+summary(model4)
+anova(model4, model3)
+
+## do we REMOVE 'read' since it is not sig?
+model4a <- lmer(anti ~ 1 + time + momage + homecog + (1|id), REML = FALSE, data= curran_long)
+summary(model4a)
+anova(model4a, model3)
+```
+
+
+## 6. On which level or levels can you expect explained variance?
+### • Calculate and interpret the explained variances.
+We can expect the explained variances ($R^2$) at the person level (level 2), as the level 2 predictor can only explain the variance in level 2. The computed $R^2$ value for the person level is:  
+
+ - $R^2_{person}$ = 0.0653
+```{r}
+m2var.lv1 <- 1.689
+m2var.lv2 <- 1.592
+m4var.lv1 <- 1.689     # depends on which model we use, 4 or 4a? I am going with 4a the one without 'read'
+m4var.lv2 <- 1.488
+
+## explained variance at level 2 (person level)
+R2.lv2 <- (m2var.lv2 - m4var.lv2) / m2var.lv2
+cat("Explained variance at the person level =", round(R2.lv2,4))
+```
+
+
+## 7. For the time-varying predictor(s), check if the slope is fixed or random.
+### • What are the null- and alternative hypotheses?
+ - *$H_{0}$*:
+ - *$H_{1}$*: 
+
+### • Provide and interpret the relevant results.
+
+### • Provide an overall conclusion.
+
+## 8. If there is a random slope, set up a model that predicts the slope variation.
+### • Provide and interpret the relevant results and provide your overall conclusion.
+
+## 9. Decide on a final model.
+### • provide the separate level 1 and 2 model equations, as well as the mixed model equation.
+### • Check the normality assumption for both the level-1 and level-2 errors, report
+2
