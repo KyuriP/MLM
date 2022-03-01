@@ -1,8 +1,8 @@
 ---
 title: "MLM Assignment 2"
 author: 
-- "Emilia Löscher" 
 - "Christine Hedde-von-Westernhagen"
+- "Emilia Löscher" 
 - "Kyuri Park"
 date: "`r format(Sys.time(), '%d %B, %Y')`"
 output: pdf_document
@@ -85,7 +85,6 @@ ggplot(curran_long, aes(x=anti)) +
 box1 <- ggplot(curran_long, aes(y=anti)) + geom_boxplot() + 
   theme_minimal() + labs(title = "antisocial behavior", y="") + 
   coord_flip() + My_Theme
-
 box2 <- ggplot(curran_long, aes(y=read)) + geom_boxplot() + 
   theme_minimal() + labs(title = "reading recognition", y ="") + 
   coord_flip()+ My_Theme
@@ -94,7 +93,6 @@ box3 <- ggplot(curran_long, aes(y=momage)) + geom_boxplot() +
   coord_flip()+ My_Theme
 box4 <- ggplot(curran_long, aes(y=homecog)) + geom_boxplot() + 
   theme_minimal() + labs(title = "cognitive stimulation", y = "")+ 
-  
   coord_flip()+ My_Theme
 
 ggarrange(box1, box2, box3, box4, nrow=2, ncol=2)
@@ -170,7 +168,7 @@ p4 <- curran_long %>%
               aes(color = "quadratic"),
               se = FALSE) +
   theme_minimal()+
-  xlab("cognitivie stimulation") +
+  xlab("Cognitivie stimulation") +
   ylab("Avg. antisocial behavior over time")+
   ggtitle("Level 2 (person level)")+ My_Theme
 
@@ -182,11 +180,24 @@ ggarrange(p3, p4, ncol=2, common.legend = TRUE, legend="bottom")
 ## 2. Answer the question: should you perform a multilevel analysis?
 ### • What is the mixed model equation?
  -- Mixed Model Equation
-$$ y_{ti} = \beta_{00} + u_{0i} + e_{ij} $$
+$$ y_{ti} = \beta_{00} + u_{0i} + e_{ti} $$
+\begingroup
+\fontsize{9}{12}\selectfont
+\begin{itemize}
+\setlength{\itemindent}{0.2cm}
+\setlength{\itemsep}{0pt}
+\setlength{\parskip}{0pt}
+\setlength{\parsep}{0pt}
+ \item[-] $y_{ti}$ refers to antisocial behavior of child $i$ at time $t$.
+ \item[-] $\beta_{00}$ refers to the overall intercept, which is the average antisocial behavior over all children.
+\item[-] $u_{0j}$ refers to the random residual error at the person level (level 2), which represents the deviation from the overall intercept ($\beta_{00}$) of child $i$. 
+\item[-] $e_{ij}$ refers to the residual error at the occasion level (level 1).
+\end{itemize}
+\endgroup
 
 ### • Provide and interpret the relevant results.  
 ```{r}
-## model 1: random intercept model ((base model to compute ICC))
+## model 1: random intercept model ((benchmark model to compute ICC))
 model1 <- lmer(anti ~ 1 + (1|id), REML = FALSE, data= curran_long)
 summary(model1)
 ```
@@ -203,13 +214,13 @@ cat("ICC =", ICC)
 
 
 ### • What is your conclusion regarding the overall question regarding the necessity of performing a multilevel analysis?  
-Yes we should perform the multilevel analysis in this case, because not only the data structure is nested (i.e., multiple measurements within each individual), but also the difference between individuals accounts for about *48%* of the total variance. In other words, the intraclass correlation -- ICC: the proportion of the total variance explained by the grouping structure -- is *0.476*, which is high enough that the multilevel analysis is warranted.
+Yes we should perform the multilevel analysis in this case, because not only the data structure is nested (i.e., multiple measurements within each individual), but also the difference between individuals accounts for about *48%* of the total variance. In other words, the intraclass correlation -- ICC: the proportion of the total variance explained by the between-individual differences -- is *0.476*, which is high enough that the multilevel analysis is warranted.
 
 ## 3. Add the time-varying predictor(s).
 ### • Provide and interpret the relevant results and provide your overall conclusion.
 The time-varying predictor, `read` is not significant.
 ```{r}
-## model2: add time predictor ((benchmark model for R2))
+## model2: add time predictor ((benchmark model for computing R2))
 model2 <- lmer(anti ~ 1 + time + (1|id), REML = FALSE, data= curran_long)
 summary(model2)
 anova(model2, model1)
@@ -284,7 +295,7 @@ cat("Explained variance at the person level =", round(R2.lv2,4))
  - *$H_{1}$*: 
 
 ### • Provide and interpret the relevant results.
-
+The variance of time and read are significant when added separately but the model does not converge when they are put together in a model..
 ### • Provide an overall conclusion.
 
 ## 8. If there is a random slope, set up a model that predicts the slope variation.
@@ -293,4 +304,9 @@ cat("Explained variance at the person level =", round(R2.lv2,4))
 ## 9. Decide on a final model.
 ### • provide the separate level 1 and 2 model equations, as well as the mixed model equation.
 ### • Check the normality assumption for both the level-1 and level-2 errors, report
-2
+
+# Contribution
+- Christine :  
+- Emilia :  
+- Kyuri:  
+
