@@ -1,2 +1,2 @@
 # MLM
-Repository for MSBBSS course Multilevel Modeling course
+Repository for the Multilevel Modeling course 2022 @Utrecht University
