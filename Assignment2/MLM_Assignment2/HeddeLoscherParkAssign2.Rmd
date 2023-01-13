@@ -1,0 +1,722 @@
+---
+title: \vspace{-1.5cm} MLM Assignment 2
+author: 
+- "Christine Hedde-von Westernhagen"
+- "Emilia Löscher" 
+- "Kyuri Park"
+date: "*Utrecht University*, 07 March, 2022"
+output: pdf_document
+geometry: margin=0.7in
+header-includes:
+   - \usepackage{multirow,booktabs,setspace,caption,threeparttable}
+   - \DeclareCaptionLabelSeparator*{spaced}{\\[2ex]}
+   - \captionsetup[table]{textfont=it,format=plain,justification=raggedright, singlelinecheck=false,labelsep=spaced,skip=0pt}
+   
+---
+
+\fontsize{10}{14}
+\selectfont
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggpubr)
+library(pander)
+library(purrr)
+library(lattice)
+library(gridExtra)
+library(reghelper)
+library(lme4)
+library(lmerTest)
+```
+
+## Data Description
+
+In this assignment, we analyze the `curran_wide.csv` data  set, which contains the 
+information about the age, antisocial behavior, reading skills, emotional support, 
+cognitive stimulation, and mother's age of 221 sampled children. 
+Antisocial behavior and reading skills are measured over 4 occasions. 
+In this analysis, we do not use the variables for child's gender and emotional support.
+
+The data specifics are as follows:
+
+ * `id`: child id
+ * `time`: measurement occasion
+ * `anti`: antisocial behavior (time-variant)
+ * `read`: reading recognition skills (time-variant)
+ * `momage`: mother's age measured at the first occasion (time-invariant)
+ * `homecog`: cognitive stimulation measured at the first occasion (time-invariant)
+ 
+## 1. Convert the wide data file into a long format. Check the data and recode if necessary.
+As seen below, the original data (`curran_wide.csv`) is converted into a long format.  
+`time` is re-coded from 1 - 4 to 0 - 3 such that the first measurement is set to 0.  
+`read`, `momage`, and `homecog` are centered at the grand mean.  
+The reasons we center them at the grand mean are as follows:  
+1) It can give a meaningful interpretation for the overall intercept such that the the intercept represents the expected value of antisocial behavior for average children (with average reading skills, average mom's age and average cognitive stimulation) when these predictors are included in the model.  
+2) In case of including an interaction effect, grand-mean centering can make the main effect also more interpretable, as 0 now represents the average value of the explanatory variables.  
+3) It can also make the intercept variance more meaningful (e.g., the expected difference between children at the average level of a predictor variable).
+
+```{r, echo=FALSE, message=FALSE}
+## load the data
+curran_wide <- readr::read_csv("curran_wide.csv")
+
+## check the wide data
+# head(curran_wide)
+```
+
+```{r, echo=FALSE}
+## prepare the data
+curran_long <- curran_wide %>% 
+  # not using homeo and child's gender
+  select(-c(homeemo,sex)) %>% 
+  # convert it to a long format
+  pivot_longer(!c(id, momage, homecog), 
+               names_to = c(".value", "time"),
+               names_pattern = "(anti|read)(.)",
+               names_transform = list(time = as.integer))  %>% 
+  # re-code time from 1:4 to 0:3, and grand-mean center 'read', 'momage' and 'homecog'
+  mutate(time = time - 1,
+         read = read - mean(read), 
+         momage = momage - mean(momage), 
+         homecog = homecog - mean(homecog)) %>% 
+  # re-order the columns
+  relocate(time, anti, read, .after=id)
+
+## check the long formatted data
+head(curran_long)
+
+summed.dat <- psych::describe(curran_long)[,-c(1,6,7,10,12)] 
+panderOptions('round',2)
+pander(summed.dat, caption="Descriptive statistics")
+```
+
+
+```{r hist, echo=FALSE, fig.height =2, fig.width=5, fig.align='center', fig.cap="Right-skewed Antisocial behavior"}
+# set the theme for the following plots
+My_Theme = theme(
+  plot.title = element_text(size = 11, hjust = 0.5),
+  axis.title.x = element_text(size = 10),
+  axis.title.y = element_text(size = 10))
+
+# plot the histogram of 'anti'
+ggplot(curran_long, aes(x = anti)) +
+  geom_histogram(binwidth=1, 
+                 fill="#69b3a2", 
+                 color="#e9ecef", 
+                 alpha=0.9) +
+  theme_minimal() +
+  xlab("antisocial behavior") +
+  ggtitle("Distribution of antisocial behavior") + 
+  My_Theme
+```
+
+*Table 1* shows the descriptive statistics of each variable in the re-coded data.
+There are total 884 observations for 221 children. The mean values of `read`, `momage`, and `homecog` are 0, 
+as expected (grand-mean centered), and they seem to be not overly skewed given that they have small skewness (i.e., <|1|). 
+The skewness value of `anti` is higher than 1, which indicates that the distribution is skewed. 
+Hence, we checked the distribution of `anti` using a histogram and as shown in *Figure 1*, the distribution is right-skewed where most values are clustered around the left tail. This is in alignment with the (top-left) boxplot shown in *Figure 2*.
+
+
+### 1a. Check the linearity assumption, report and include plots.
+Based on *Figure 3*, it is concluded that the linearity assumption is met in both level 1 and level 2, even though the relationships between the variables seem to be rather weak (i.e., slopes are quite flat), except for *(d) Cognitive stimulation - Average Antisocial behavior*.  
+
+### 1b. Check for outliers.
+*Figure 2* shows that *antisocial behavior* has several univariate outliers and *cognitive stimulation* also has one outlier in the left tail. In *Figure 3*, we can check the bivariate outliers at each level. At level 1, although there are few points spotted in the upper-side of plots *(a)* and *(b)*, they do not seem to be influential. Also, at level 2, no such influential outlier is observed. 
+
+
+```{r boxplots, echo=FALSE, fig.height=3, fig.width=8, fig.align='center', fig.cap="Overall distribution of each variables"}
+
+box_list <- list()
+
+box_list <- map2(
+  
+  c("anti", "read", "momage", "homecog"),
+  c("antisocial behavior", "reading recognition", 
+       "mother's age", "cognitive stimulation"),
+
+  function(var, lab) {
+    ggplot(curran_long, aes(y = .data[[var]])) + 
+      geom_boxplot() + 
+      theme_minimal() + 
+      labs(title = lab, y = "") + 
+      coord_flip() +
+      My_Theme
+     }
+  )
+
+ggarrange(plotlist = box_list, nrow = 2, ncol = 2)
+```
+
+```{r scatterplots, echo=FALSE, fig.height=6, fig.width=8, message = FALSE, fig.cap="Scatterplots to insepct linearity and outliers"}
+
+## check for linearity and outliers
+
+## level1 
+p1 <- ggplot(curran_long,
+       aes(x = time, y = anti)) +
+  geom_jitter(shape = 1, cex = 0.5) +
+  geom_smooth(method = "lm",
+              aes(color = "linear"),
+              se = FALSE) +
+  geom_smooth(method = "lm",
+              formula = y ~ x + I(x^2),
+              aes(color = "quadratic"),
+              se = FALSE) +
+  theme_minimal() +
+  xlab("Time") +
+  ylab("Antisocial behavior") +
+  labs(color = "Fit method") +
+  ggtitle("(a) Level 1 (occasion level)")+
+  My_Theme
+
+p2 <- ggplot(curran_long,
+       aes(x = read, y = anti)) +
+  geom_point(shape = 1, cex = 0.5) +
+  geom_smooth(method = "lm",
+              aes(color = "linear"),
+              se = FALSE) +
+  geom_smooth(method = "lm",
+              formula = y ~ x + I(x^2),
+              aes(color = "quadratic"),
+              se = FALSE) +
+  theme_minimal() +
+  xlab("Reading recognition") +
+  ylab("Antisocial behavior") +
+  labs(color = "Fit method") +
+  ggtitle("(b) Level 1 (occasion level)") + 
+  My_Theme
+
+## level2 
+p3 <- curran_long %>% 
+  group_by(id) %>% 
+  # aggregate the antisocial behavior: aggregated_anti
+  mutate(aggregated_anti = mean(anti)) %>% 
+  ggplot(aes(x = momage, y = aggregated_anti)) +
+    geom_point(shape = 1, cex = 0.5) +
+  geom_smooth(method = "lm",
+              aes(color = "linear"),
+              se = FALSE) +
+  geom_smooth(method = "lm",
+              formula = y ~ x + I(x^2),
+              aes(color = "quadratic"),
+              se = FALSE) +
+  theme_minimal() +
+  xlab("Mother's age") +
+  ylab("Avg. antisocial behavior over time") +
+  labs(color = "Fit method") +
+  ggtitle("(c) Level 2 (person level)") + 
+  My_Theme
+
+p4 <- curran_long %>% 
+  group_by(id) %>% 
+  # aggregate the antisocial behavior: aggregated_anti
+  mutate(aggregated_anti = mean(anti)) %>% 
+  ggplot(aes(x = homecog, y = aggregated_anti)) +
+    geom_point(shape = 1, cex = 0.5) +
+  geom_smooth(method = "lm",
+              aes(color = "linear"),
+              se = FALSE) +
+  geom_smooth(method = "lm",
+              formula = y ~ x + I(x^2),
+              aes(color = "quadratic"),
+              se = FALSE) +
+  theme_minimal() +
+  xlab("Cognitivie stimulation") +
+  ylab("Avg. antisocial behavior over time") +
+  labs(color = "Fit method") +
+  ggtitle("(d) Level 2 (person level)") + 
+  My_Theme
+
+ggarrange(p1, p2, p3, p4, common.legend = TRUE, legend = "bottom")
+```
+
+\newpage
+## 2. Answer the question: should you perform a multilevel analysis?
+
+### 2a. What is the mixed model equation?
+
+ -- Mixed Model Equation
+ 
+$$ anti_{ti} = \beta_{00} + u_{0i} + e_{ti} $$
+
+\begingroup
+\fontsize{9}{12}\selectfont
+\begin{itemize}
+\setlength{\itemindent}{0.2cm}
+\setlength{\itemsep}{0pt}
+\setlength{\parskip}{0pt}
+\setlength{\parsep}{0pt}
+ \item[-] $anti_{ti}$ refers to antisocial behavior of child $i$ at time $t$.
+ \item[-] $\beta_{00}$ refers to the overall intercept, which is the average antisocial behavior over all children.
+\item[-] $u_{0i}$ refers to the random residual error at the person level (level 2), which represents the deviation from the overall intercept ($\beta_{00}$) of child $i$. 
+\item[-] $e_{ti}$ refers to the residual error at the occasion level (level 1) of child $i$ at time $t$.
+\end{itemize}
+\endgroup
+
+### 2b. Provide and interpret the relevant results.
+As shown in *Table 2*, the intercept term is identical as 1.82 in the single-level model $M_{0}$ and the random intercept model $M_{1}$. This overall intercept represents the average antisocial behavior across all children. $M_{1}$ decomposes the variance term in a variance at level 1 ($Var_{occ}$) and level 2 ($Var_{sub}$).
+
+The deviance for the random intercept model turns out to be significantly smaller than that of the single-level model, $\chi^2(1) = 231.97$, $p < .001$, indicating that $Var_{sub}$ is significantly greater than 0. The AIC value is also lower for the random intercept model ($AIC_{M_{1}} = 3343.5$) compared to the single-level model ($AIC_{M_{0}} = 3573.5$), which is in accordance with the deviance difference test result. This means that initial antisocial behavior level (at the first occasion since time is recoded to 0 - 3) differs across the children. 
+
+```{r, results='hide'}
+# model0: single-level regression model for comparison
+model0 <- lm(anti ~ 1, data = curran_long)
+summary(model0)
+
+# model1: random intercept model ((benchmark model to compute ICC))
+model1 <- lmer(anti ~ 1 + (1|id), REML = FALSE, data = curran_long)
+summary(model1)
+
+# check the significance of random intercept
+anova(model1, model0)
+```
+
+
+\begin{table}[!ht]
+\centering
+\begin{threeparttable}
+\caption{Single-level model and Intercept-only model}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Model}                & $M_{0}$: single-level model & $M_{1}$: random intercept \\ \midrule
+\textit{\textbf{Fixed part}}  & Coefficient(SE)             & Coefficient(SE)          \\
+Intercept                     & 1.82(.06)                  & 1.82(.10)              \\
+\textit{\textbf{Random part}} &                             &                         \\
+$Var_{occ}$                      & 3.32                        & 1.74       \\
+$Var_{sub}$                     &                             & 1.58                    \\
+\textbf{Deviance}             & 3569.5                     & 3357.5                 \\
+\textbf{AIC}                  & 3573.5                     & 3343.5                 \\
+\textbf{Deviance difference$^{a}$}  &                             & 231.97$^{***}$                \\
+\bottomrule
+\multicolumn{3}{l}{Note}\\
+$^{***} p<.001, ^{**} p<.01$ \\
+$^a$ p-value for $\chi^2$ test is one-sided p-value. \\
+\end{tabular}
+\end{threeparttable}
+\end{table}
+
+\newpage
+### 2c. What is the intraclass correlation?
+
+The intraclass correlation ($\rho$) is calculated as follows: 
+
+$$ \rho = \frac{\sigma^2_{u0}}{\sigma^2_{u0} + \sigma^2_e} $$ 
+
+```{r}
+ICC <- 1.579/(1.579+1.741)
+```
+
+The ICC in this model is equal to $\rho = `r round(ICC, digits=2)`$.
+
+### 2d. What is your conclusion regarding the overall question regarding the necessity of performing a multilevel analysis?  
+Yes, we should perform the multilevel analysis in this case, because not only is the data structure nested (i.e., multiple measurements within each individual), but also the difference between individuals accounts for about *48%* of the total variance. In other words, the intraclass correlation -- ICC: the proportion of the total variance explained by the between-individual differences -- is *0.476*, which is high enough that the multilevel analysis is warranted.   
+
+Also, as shown above, the chi-square difference test comparing models $M_{0}$ and $M_{1}$ results in the significant outcome in favor of the random intercept multilevel model ($M_{1}$), $\chi^2(1) = 231.97$, $p < .001$, which indicates that the $M_{1}$ fits the data significantly better than the single-level model ($M_{0}$).  
+
+In addition, *Figure 4* shows the relationships between *antisocial behavior - time* and *antisocial behavior - reading skills* in each children (first 20). Here we see that the slopes and intercepts vary across the children, which again suggests the necessity of multilevel analysis that can properly address this between-person variabilities.
+
+```{r schoolscatter, echo=FALSE, fig.align='center', fig.cap="Scatterplots of children to inspect the variabilities in intercepts/slopes", fig.height=10}
+uniqueID <- unique(curran_long$id)[1:20]
+p5 <- xyplot(anti ~ time | id, groups= id, data=curran_long[curran_long$id %in% uniqueID,],
+       type=c('p','r'), auto.key=F, cex=0.3, main= "(a) Antisocial behavior - Time")
+
+p6 <- xyplot(anti ~ read | id, groups= id, data=curran_long[curran_long$id %in% uniqueID,],
+       type=c('p','r'), auto.key=F, cex=0.3, main= "(b) Antisocial behavior - Reading skills")
+
+grid.arrange(p5, p6)
+```
+
+\newpage
+## 3. Add the time-varying predictor(s).
+### Provide and interpret the relevant results and provide your overall conclusion.
+As shown in *Table 3*, the intercept term is now 1.55 in $M_2$ with `time` predictor, which refers to the average antisocial behavior at the first occasion (time = 0) over all children. `time` turns out to be a statistically significant predictor of `anti`, $b_{time}=0.18, t(663) = 4.513, p < .001$, meaning that antisocial behavior is expected to increase by 0.18 on each succeeding occasion. By adding `time`, the occasion-level residual error variance ($Var_{occ}$) goes down to 1.69, but the subject-level variance ($Var_{sub}$) goes up to 1.60. This is the case because in the longitudinal data with fixed occasion measurements, there is no variation in time-points between subjects. Subsequently, $Var_{occ}$ is overestimated and $Var_{sub}$ is underestimated in the intercept-only model, $M_1$. In order to correct this, a measurement occasion variable needs to be included in the model. Hence, $M_2$ with the predictor `time` correctly decomposes the variance terms and correspondingly can be used as a benchmark model for computing the $R^2$.  
+
+The significance of adding `time` to the random intercept model($M_{1}$):  
+The deviance of $M_{2}$ is significantly smaller than the deviance of $M_{1}$, $\chi^2(1) = 20.06$, $p < .001$ (see *Table 2* and *Table 3*). It indicates that $M_{2}$ has a significantly better model fit than the intercept-only model, $M_{1}$. The AIC values also reflect this, as $AIC_{M_{2}} = 3325.5$ is lower than $AIC_{M_{1}} = 3343.5$.
+
+In $M_{3}$ with `time` and `read` together, `time` is still a significant predictor $b_{time}=0.21, t(882) = 2.73, p < .01$, but `read` is not a significant predictor of `anti`, $b_{read}=-0.03, t(831) = -0.54, p = .588$. The deviance of $M_3$ is 3317.2, which is almost the same as $M_2$, and the difference in the deviance is not significant as expected, $\chi^2(1) = 0.29$, $p = .297$. Also, the AIC of $M_3$ is slightly higher than the AIC of $M_2$ (see *Table 3*), which again suggests that adding `read` does not provide a better model fit. Therefore, we drop `read` and proceed with $M_2$ including only the predictor `time`.
+
+```{r results='hide'}
+# model2: add a time-varying predictor, time ((benchmark model for computing R2))
+model2 <- lmer(anti ~ 1 + time + (1|id), REML = FALSE, data = curran_long)
+summary(model2)
+# to check if time is a significant predictor
+anova(model2, model1)
+
+# model3: add a time-varying predictor, read
+model3 <- lmer(anti ~ 1 + time + read + (1|id), REML = FALSE, data = curran_long)
+summary(model3)
+# to check if read is a significant predictor
+anova(model3, model2)
+```
+
+
+\begin{table}[!ht]
+\centering
+\begin{threeparttable}
+\caption{Adding time-varying predictors}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Model}                & $M_{2}$: add time & $M_{3}$: add read \\ \midrule
+\textit{\textbf{Fixed part}}  & Coefficient(SE)             & Coefficient(SE)          \\
+Intercept                     & 1.55(.11)                   & 1.50(.15)              \\
+time                          & 0.18$(.04)^{***}$           & 0.21$(.07)^{**}$     \\
+read                          &                             & -0.03$(.06)$           \\
+\textit{\textbf{Random part}} &                             &                         \\
+$Var_{occ}$                   & 1.69                        & 1.69       \\
+$Var_{sub}$                   & 1.60                        & 1.58                    \\
+\textbf{Deviance}             & 3317.5                      & 3317.2                 \\
+\textbf{AIC}                  & 3325.5                      & 3327.2                 \\
+\textbf{Deviance difference$^{a}$}  & 20.06$^{***}$         & 0.29               \\
+\bottomrule
+\multicolumn{3}{l}{Note}\\
+$^{***} p<.001, ^{**} p<.01$ \\
+$^a$ p-value for $\chi^2$ test is one-sided p-value. \\
+\end{tabular}
+\end{threeparttable}
+\end{table}
+
+
+\newpage
+## 4. On which level or levels can you expect explained variance?
+### Calculate and interpret the explained variances.
+In theory, we can expect explained variances ($R^2$) at both occasion (level 1) and subject level (level 2), as the level 1 predictor in general can explain the variances at both levels. However, in this case where the additional time-varying predictor `read` is not significant and correspondingly does not reduce the variance at the occasion level (but rather increase it slightly), $R^2_{occasion}$ becomes negative and therefore, is not defined.  
+
+```{r, results='hide'}
+m2var.lv1 <- 1.689 # level 1 variance in model 2 (benchmark model)
+m2var.lv2 <- 1.592 # level 2 variance in model 2 (benchmark model)
+m3var.lv1 <- 1.693 # level 1 variance in model 3 
+m3var.lv2 <- 1.576 # level 2 variance in model 3
+
+# explained variance at level 1 (occasion level)
+R2.lv1 <- (m2var.lv1 - m3var.lv1) / m2var.lv1
+R2.lv1
+
+# explained variance at level 2 (subject level)
+R2.lv2 <- (m2var.lv2 - m3var.lv2) / m2var.lv2
+R2.lv2
+```
+
+The computed $R^2$ values for each level using $M_2$ as our benchmark:  
+
+ - $R^2_{occasion}$ = not defined
+ - $R^2_{subject}$ = $`r round(R2.lv2, 4)`$
+
+This means that reading recognition skill (`read`) further explains about 1% of the variance between children, which is not a lot. Hence, it is concluded that `read` has a low explanatory power.
+
+
+## 5. Add the time invariant predictor(s) to the model.
+### Provide and interpret the relevant results and provide your overall conclusion.
+In $M_{4a}$ we add both time invariant predictors, mother's age (`momage`) and cognitive stimulation (`homecog`). As shown in *Table 4*, `momage` turns out to be not significant, $b_{momage}=-0.001, t(221) = -0.02, p = .985$, and only `homecog` is significant, $b_{homecog}=-0.13, t(221) = -3.35, p < .001$. This means that for each one point increase in `homecog` (the more cognitive stimulation a child receives), the average `anti` over time is expected to decrease by 0.13 (the average antisocial behavior of a child goes down) when the other predictors are held constant. The intercept term value remains almost the same as in the previous model (i.e., 1.55), but the interpretation of it now with the added predictors is the expected antisocial behavior for children with the average cognitive stimulation and average mom's age at the first occasion (as `homecog` and `momage` are centered at the grand mean). By adding these level 2 predictors, we see that the variance at level 2 (subject level) is decreased and this correspondingly produces $R^2_{subject}=.065$ (see Q6 for the derivation of $R^2_{subject}$).   
+
+The significance of adding `momage` and `homecog` to $M_{2}$^[We choose $M_{2}$ for the comparison because $M_{3}$ includes the non-significant predictor `read` which is not included in $M_{4a}$ and $M_{4b}$]:  
+The deviance of $M_{4a}$ is significantly smaller than the deviance of $M_{2}$, $\chi^2(2) = 11.642$, $p < .01$. It indicates that $M_{4a}$ fits significantly better than $M_{2}$ with only `time`. 
+The lower $AIC_{M_{4a}} = 3317.8$ also suggests that $M_{4a}$ is preferable.  
+
+However, given that `momage` is not a significant predictor, we drop `momage` and only include `homecog` in the model, $M_{4b}$. The fixed part of model remains nearly the same; both `time`, $b_{time}=0.18, t(663) = 4.513, p < .001$, and `homecog` are significant,$b_{homecog}=-0.13, t(221) = -3.35, p < .001$. It means that antisocial behavior is expected to increase by 0.18 on each succeeding time point, and the average antisocial behavior is expected to decrease by 0.13 with each point higher on cognitive stimulation. The intercept term here would represent the average antisocial behavior for children with the average cognitive stimulation at the first occasion. By keeping only `homecog` in the model, we see that the variance at level 2 (subject level) is decreased by same amount as in $M_{4a}$ and accordingly results in the same $R^2_{subject}=.065$.  
+
+The significance of adding only `homecog` to $M_{2}$:  
+The deviance of $M_{4b}$ is significantly smaller than the deviance of $M_{2}$, $\chi^2(1) = 11.641$, $p < .001$. It indicates that $M_{4b}$ fits significantly better than $M_{2}$ with only `time`. 
+In addition, $AIC_{M_{4b}} = 3315.8$ is not only lower than the AIC for $M_{2}$ but is also slightly lower than the AIC for $M_{4a}$. Given these overall results, we decided to proceed with $M_{4b}$ with predictors `time` and `homecog`.
+
+```{r, results='hide'}
+## proceed with a model without the non-significant predictor, 'read'
+# model4a: add time-invariant predictors, momage & homecog
+model4a <- lmer(anti ~ 1 + time + momage + homecog + (1|id), REML = FALSE, data= curran_long)
+summary(model4a)
+# to check if momage & homecog is significant
+anova(model4a, model2)
+
+# model4b: remove the non-significant predictor, 'momage'
+model4b <- lmer(anti ~ 1 + time + homecog + (1|id), REML = FALSE, data= curran_long)
+summary(model4b)
+anova(model4b, model2)
+```
+
+\begin{table}[!ht]
+\centering
+\begin{threeparttable}
+\caption{Adding time-invariant predictors}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Model}                  & $M_{4a}$: add momage + homecog & $M_{4b}$: add only homecog \\ \midrule
+\textit{\textbf{Fixed part}}      & Coefficient(SE)                & Coefficient(SE)          \\
+Intercept                         & 1.55(.11)                      & 1.55(.11)              \\
+time                              & 0.18$(.04)^{***}$               & 0.18$(.04)^{***}$     \\
+momage                            & 0.00(.05)                       &                       \\
+homecog                           & -0.13$(.04)^{***}$               & -0.13$(.01)^{***}$     \\
+\textit{\textbf{Random part}}     &                                 &                         \\
+$Var_{occ}$                       & 1.70                            & 1.69       \\
+$Var_{sub}$                       & 1.50                            & 1.49                    \\
+\textbf{Deviance}                 & 3305.8                         & 3305.8                 \\
+\textbf{AIC}                      & 3317.8                         & 3315.8                 \\
+\textbf{Deviance difference$^{ab}$}  &11.64$^{**}$            & 11.64$^{***}$               \\
+\bottomrule
+\multicolumn{3}{l}{Note}\\
+$^{***} p<.001, ^{**} p<.01$ \\
+$^a$ p-value for $\chi^2$ test is one-sided p-value. \\
+$^b$ Here the deviance is compared with $M_{2}$.
+\end{tabular}
+\end{threeparttable}
+\end{table}
+
+## 6. On which level or levels can you expect explained variance?
+### Calculate and interpret the explained variances.
+We can expect the explained variances ($R^2$) at the subject level (level 2), as the level 2 predictor can only explain the variance at level 2. (As seen below, the level 1 variance does not change). 
+
+```{r, results='hide'}
+m2var.lv1 <- 1.689 # level 1 variance in model 2 (benchmark model)
+m2var.lv2 <- 1.592 # level 2 variance in model 2 (benchmark model)
+m4var.lv1 <- 1.689 # level 1 variance in model 4b    
+m4var.lv2 <- 1.488 # level 2 variance in model 4b
+
+# explained variance at level 2 (subject level)
+R2.lv2 <- (m2var.lv2 - m4var.lv2) / m2var.lv2
+R2.lv2
+```
+
+The computed $R^2$ value for the subject level using $M_2$ as our benchmark:   
+
+ - $R^2_{subject}$ = $`r round(R2.lv2, 4)`$  
+ 
+This means that cognitive stimulation provided at home (`homecog`) explains about 6.5% of the variance between children.
+
+\newpage
+## 7. For the time-varying predictor(s), check if the slope is fixed or random.
+
+### 7a. What are the null- and alternative hypotheses? 
+The null- and alternative hypotheses for checking whether the slope for the time-varying predictor `time` is fixed or random are:
+
+ - *$H_{0}$*: $\sigma_{u1}^2 = 0$; The slope for the time variable is equal across the children. 
+ - *$H_{1}$*:  $\sigma_{u1}^2 > 0$; The slope for the time variable varies across the children. 
+
+The null- and alternative hypotheses for checking whether the slope for the time-varying predictor `read` is fixed or random are:   
+
+ - *$H_{0}$*: $\sigma_{u2}^2 = 0$; The slope for the read variable is equal across the children.
+ - *$H_{1}$*:  $\sigma_{u2}^2 > 0$; The slope for the read variable varies across the children.    
+
+
+We considered both of the time-varying predictors `time` and `read` here (despite `read` being dropped from the model earlier due to its non-significance), as it is possible for a predictor to have no significant average regression slope but to have a significant variance component for the slope.
+
+### 7b. Provide and interpret the relevant results.
+First, we fit the models including a random slope for each of the time-varying predictors separately: `time` and `read` one-by-one.  
+
+The deviance difference between the model including random slopes for `time` ($M_{5a}$) and model with fixed slope ($M_{4b}$) is significant, $\chi^2(2) = 26.561$, $p < .001$. $AIC_{M_{5a}} = 3293.3$ is lower than $AIC_{M_{4b}} = 3315.8$.  
+
+The deviance difference between the model including random slopes for `read` ($M_{5b}$) and model with fixed slope ($M_{4b}$) is also significant, $\chi^2(3) = 18.872$, $p < .001$. $AIC_{M_{5a}} = 3303.0$ is again lower than $AIC_{M_{4b}} = 3315.8$.  
+
+However, when we attempt to let both predictors have random slopes ($M_{5c}$), the model fails to converge.  
+Given that $M_{5a}$ has the lower deviance as well as lower AIC value, we decided to proceed with $M_{5a}$ including random slopes for `time` and interpret the results further.
+
+
+```{r, results='hide'}
+# model5a: let 'time' have random slopes
+model5a <- lmer(anti ~ 1 + time + homecog + (1 + time|id), REML = FALSE, data = curran_long)
+summary(model5a)
+anova(model5a, model4b)
+
+# model5b: let 'read' have random slopes
+model5b <- lmer(anti ~ 1 + time + homecog + read + (1 + read|id),
+                REML = FALSE, data= curran_long)
+summary(model5b)
+anova(model5b, model4b)
+
+# model5c: let both have random slopes --> model fails to converge
+model5c <-  lmer(anti ~ 1 + time + homecog + read + (1 + time + read|id),
+                 REML = FALSE, data = curran_long)
+summary(model5c)
+```
+\newpage
+
+\begin{table}[!ht]
+\centering
+\begin{threeparttable}
+\caption{Adding random slopes}
+\begin{tabular}{lc}
+\toprule
+\textbf{Model}                & $M_{5a}$: random slope for time \\ 
+\midrule
+\textit{\textbf{Fixed part}}  & Coefficient(SE)       \\
+Intercept                     & 1.55 (.10)            \\
+time                          & 0.18$(.04)^{***}$             \\
+homecog                       &-0.10$(.04)^{**}$            \\
+\textit{\textbf{Random part}} &                       \\
+$Var_{occ}$                & 0.95                  \\
+$Var_{sub}$               & 1.53                  \\
+$Var_{time}$               & 0.10                  \\
+$Cor_{sub*time}$                & 0.41                  \\
+\textbf{Deviance}             & 3279.3                \\
+\textbf{AIC}                  & 3293.3                \\
+\textbf{Deviance difference$^{ab}$}  &26.56$^{***}$  \\
+\bottomrule
+\multicolumn{2}{l}{Note}\\
+$^{***} p<.001, ^{**} p<.01$ \\
+$^a$ p-value for $\chi^2$ test is one-sided p-value.\\
+$^b$ Here the deviance is compared with $M_{4b}$.
+\end{tabular}
+\end{threeparttable}
+\end{table}
+
+As seen in *Table 5*, the fixed part of model does not change much in $M_{5a}$ where the slope of `time` is allowed to vary across children. The intercept term is the same as 1.55, `time` is still significant with the same regression coefficient, $b_{time}=0.18, t(221) = 4.137, p < .001$, and `homecog` is also significant but with a bit lower coefficient, $b_{homecog}=-0.10, t(221) = -2.793, p < .01$, compared to the previous model ($M_{4b}$). Now that we have random slopes for time, the regression coefficient of `time` represents the average overall slope across all children. The interpretation of regression coefficient of `homecog` as well as the intercept term remains the same as previously described (see Q5).  
+
+Having introduced the random slopes for time, now we also have the correlation between the intercept and slope. As shown in *Table 5*, $Cor_{sub*time}$ is estimated to be 0.41, which can be interpreted as positive intercepts (expected `anti` at the first occasion) tend to result in positive slopes (rate of change) and vice versa, in a magnitude of 0.41. This means that if a child starts with a high initial level of antisocial behavior, then he/she will show a faster increase in antisocial behavior in the following time. 
+
+Adding random slope for `time` ($M_{5a}$) turns out to fit significantly better than $M_{4b}$ with fixed slope, $\chi^2(2) = 26.561, p < .001$. In addition, $AIC_{M_{5a}} = 3293.3$ is lower than $AIC_{M_{4b}} = 3315.8$, which again suggests the better fit of $M_{5a}$. This means that the trajectory of antisocial behavior over time differs across children.
+
+### 7c. Provide an overall conclusion.
+
+Given the overall results above, we decide that $M_{5a}$ with the random slope in `time` has a significantly better model fit than $M_{4b}$, and correspondingly conclude that the children significantly vary in their rate of change in antisocial behavior over time.    
+
+\newpage
+
+## 8. If there is a random slope, set up a model that predicts the slope variation.
+We have found that there is a random slope for the variable `time`.
+In the following, we are fitting two models to check whether the variable `momage` or the variable `homecog` can explain the slope variation in `time`.
+
+### Provide and interpret the relevant results and provide your overall conclusion.
+In $M_{6a}$, the interaction of `time` and `homecog` is added to the model. As shown in *Table 6*, the interaction of `homecog` and `time` is significant, $b_{time * homecog} = -0.05, t(221) = -2.643, p < .01$, indicating that `homecog` can partly explain the slope variation in `time`. This subsequently means that the effect of `time` on `anti` decreases by 0.05 with every point increase in `homecog`. In other words, the rate of change in antisocial behavior over time increases in a slower pace when cognitive stimulation is higher. This is visualized in *Figure 5* and *Figure 6*.
+
+Note, however, that the fixed effect for `homecog` is not significant anymore after including the interaction term, $b_{homecog} = -0.06, t(221) = -1.625, p = .106$. Nevertheless, the fixed effect of `homecog` is not removed from the model, as main effects of an interaction should always remain in the model. `time` is still a significant predictor, $b_{time}=0.18, t(221) = 4.202, p < .001$, and the interpretation of it now is that with each time point increase, antisocial behavior of a child is expected to increase by 0.18, when the received cognitive stimulation (`homecog`) is average, as it is grand-mean centered (`homecog` = 0 refers to the mean of `homecog`). The interpretation of overall intercept stays the same: the average antisocial behavior for a child with the average cognitive stimulation at the first occasion. The estimate of correlation between intercept and slope ($Cor_{sub*time}$) is estimated to be 0.47, which is a bit higher than the previous model, and the interpretation remains the same: if a child starts with a high initial level of antisocial behavior, then he/she will show a faster increase in antisocial behavior in the following time. 
+
+Comparison of the $M_{6a}$ and $M_{5a}$ reveals that the variance component of time ($Var_{time}$) decreases a bit (see *Table 5* and *Table 6*). It indicates that `homecog` explains a part of the slope variation in `time`. Using $M_{5a}$ as a benchmark, the explained variance is computed: the interaction term `time*homecog` explains about $`r round((0.09628 - 0.08397) / 0.09628, 2)*100`$% of the variation in the slope for `time`; $R^2_{randomslope}= `r round((0.09628 - 0.08397) / 0.09628, 2)`$. The deviance difference between $M_{6a}$ and $M_{5a}$ turns out to be significant, $\chi^2(1) = 6.8778$, $p < .01$, meaning that $M_{6a}$ fits significantly better than $M_{5a}$ Additionally, $AIC_{M_{6a}} = 3288.4$ is lower than $AIC_{M_{5a}} = 3293.3$, which again tells us that $M_{6a}$ is preferred to $M_{5a}$.  
+
+In $M_{6b}$, the interaction of `time` and `momage` is added to the model. As seen in *Table 6*, `momage` cannot predict the slope variation in `time`, as the interaction of `momage` and `time` is not significant, $b_{time*momage} = -0.003, t(221) = -0.142, p = .888$. Not surprisingly, the fixed effect of `momage` is also not significant, $b_{momage} = -0.006, t(222) = -0.119, p = .905$. This was already the case in $M_{4a}$, which led us to drop `momage` from the model. Furthermore, the deviance difference test suggests that $M_{6b}$ does not fit significantly better than $M_{5a}$, $\chi^2(2) = 0.0535$, $p = .974$. AIC value of $M_{6b}$ is also higher not only than $AIC_{M_{6a}}$, but also slightly higher than $AIC_{M_{5a}}$, which indicates that $M_{6a}$ is a better model than $M_{6b}$. 
+
+Given these overall results, we conclude that $M_{6a}$ with `homecog` can predict the slope variation in `time`. In addition, $M_{6a}$ provides a better fit compared to $M_{5a}$ and $M_{6b}$, given its significant deviance difference and lower AIC value. Hence, we decide to stick with $M_{6a}$ as our final model.  
+
+
+```{r, results='hide'}
+## add a cross-level interaction
+# model6a: check if homecog can explain the slope variation in time
+model6a <- lmer(anti ~ 1 + time + homecog + homecog*time + (1+time|id), 
+                REML = FALSE, data = curran_long)
+summary(model6a)
+anova(model6a, model5a)
+
+# model6b: check if momage can explain the slope variation in time
+model6b <- lmer(anti ~ 1 + time + momage + homecog + momage*time + (1+time|id), 
+                REML = FALSE, data = curran_long)
+summary(model6b)
+anova(model6b, model5a)
+```
+
+\begin{table}[!ht]
+\centering
+\begin{threeparttable}
+\caption{Adding a cross-level interaction}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Model}                  & $M_{6a}$: homecog*time & $M_{6b}$: momage*time \\ \midrule
+\textit{\textbf{Fixed part}}      & Coefficient(SE)                & Coefficient(SE)          \\
+Intercept                         & 1.55(.10)                      & 1.55(.10)              \\
+time                              & 0.18$(.04)^{***}$               & 0.18$(.04)^{***}$     \\
+momage                            &                                  &-0.01(.05)                       \\
+homecog                           & -0.06(.04)                       & -0.10$(.04)^{**}$     \\
+time*homecog                      & -0.05$(.02)^{**}$               &           \\
+time*momage                      &                                  &0.00(.02)       \\
+\textit{\textbf{Random part}}     &                                 &                         \\
+$Var_{occ}$                       & 1.53                            & 1.53       \\
+$Var_{sub}$                       & 0.94                            & 0.95                    \\
+$Var_{time}$                     & 0.08                             &0.10    \\
+$Cor_{sub*time}$                & 0.47                              & 0.41   \\
+\textbf{Deviance}                 & 3272.4                         & 3279.2                 \\
+\textbf{AIC}                      & 3288.4                         & 3297.2                 \\
+\textbf{Deviance difference$^{ab}$}  &6.88$^{**}$            & 0.05               \\
+\bottomrule
+\multicolumn{3}{l}{Note}\\
+$^{***} p<.001, ^{**} p<.01$ \\
+$^a$ p-value for $\chi^2$ test is one-sided p-value. \\
+$^b$ Here the deviance is compared with $M_{5}$.
+\end{tabular}
+\end{threeparttable}
+\end{table}
+
+```{r figure5, echo=FALSE, message=FALSE, fig.cap="Predicted values of antisocial behavior over time by levels of 'homecog'"}
+curran_long$predict <- predict(model6a)
+
+homecog_labs <- as.character(sort(unique(round(curran_long$homecog, 2))))
+names(homecog_labs) <- as.character(sort(unique(curran_long$homecog)))
+
+ggplot(aes(time, predict), data = curran_long) +
+  geom_jitter(size = .7, alpha = .7, width = 0.1) +
+  geom_smooth(method = "lm", se = FALSE) +
+  facet_wrap(~ homecog, 
+             labeller = labeller(homecog = homecog_labs)) +
+  theme_minimal() +
+  My_Theme
+```
+
+```{r interaction, include=FALSE}
+# probing interaction
+simple_slopes(model6a)
+```
+```{r interaction plot, echo=FALSE, out.width="70%", fig.align='center', fig.cap="Interaction between time and homecog"}
+graph_model(model6a, y=anti, x=time, lines=homecog)
+```
+
+## 9. Decide on a final model.
+We choose $M_{6a}$ to be our final model as it has the best model fit among all the tested models. The level 1 and 2 model equations, as well as the mixed model equation of our final model are given below. 
+
+### 9a. Provide the separate level 1 and 2 model equations, as well as the mixed model equation.
+
+ -- Level 1 Model Equation
+$$anti_{ti} = \pi_{0i} + \pi_{1i}time_{ti} + e_{ti}$$
+ 
+ -- Level 2 Model Equations
+$$\pi_{0i} = \beta_{00} + \beta_{01}homecog_{i} + u_{0i} $$
+$$\pi_{1i} = \beta_{10} + \beta_{11}homecog_{i} + u_{1i} $$
+
+ -- Mixed Model Equation
+$$ anti_{ti} = \beta_{00} + \beta_{10} time_{ti} + \beta_{01}homecog_{i} + \beta_{11}homecog_{i} \times time_{ti} + u_{0i} + u_{1i}time_{ti} + e_{ti} $$
+\newpage
+
+### 9b. Check the normality assumption for both the level-1 and level-2 errors, report.
+
+We checked the normality assumption on level 1 and on level 2.
+In all three cases, the normality assumption is (somewhat) violated. 
+This can be seen from the respective Q-Q plots in *Figure 7* as the points are not on the straight diagonal line. 
+
+ - In *Figure 7(a)*, the upper end of the Q-Q plot deviates from the diagonal line forming a s-shaped curve. Therefore, it is concluded that the normality assumption is slightly violated in level 1.
+
+ - *Figure 7(b)* and *Figure 7(c)* show a similar pattern -- slightly u-shaped curve -- where both tails deviate upward from the straight diagonal line. Hence, we conclude that normality assumption is again slightly violated in level 2, with both intercept and slope residuals.
+
+ - A possible explanation & corresponding solution :  
+In *Figure 1*, we observe that the distribution of the outcome variable antisocial behavior (`anti`) is very right skewed. This might have something to do with the deviation of the residual points in the Q-Q plots below. 
+Thus, transforming the outcome variable could make the normality assumption more justifiable.
+For example, a log-transformation of the variable `anti` could be considered.^[When we tested this alternative specification of the variable `anti`, we saw that for the log-transformed outcome variable `anti`, the distribution of the residuals resembled a normal distribution closely. Hence, it is advisable to re-analyze the data with a log-transformed version of the outcome variable `anti`.]
+ 
+
+```{r echo=FALSE}
+# level 1 residuals
+resid_lvl1 <- residuals(model6a)
+
+# level 2 residuals
+resid_lvl2 <- ranef(model6a)$id
+```
+
+```{r qqplots, echo=FALSE, fig.height= 8 , fig.width=8, fig.align='center', fig.cap="Q-Q plots for level 1 and level 2 residuals"}
+par(mfrow=c(2,2))
+
+# residual variance: e_ij
+qqnorm(resid_lvl1, main = "(a) Normal QQ plot for Level 1 Residual Variance", cex.main=1)
+qqline(resid_lvl1, col = "salmon")
+
+# intercept variance: u_0j
+qqnorm(resid_lvl2[,1], main = "(b) Normal QQ plot for Level 2 Intercept Variance", cex.main=1)
+qqline(resid_lvl2[,1], col = "salmon")
+
+# slope variance: u_1j
+qqnorm(resid_lvl2[,2], main = "(c) Normal QQ plot for Level 2 Slope Variance", cex.main=1)
+qqline(resid_lvl2[,2], col = "salmon")
+```
+
+\newpage
+## Contribution
+
+- Christine: Coding, interpretation, writing
+- Emilia: Coding, interpretation, writing, Excel
+- Kyuri: Coding, interpretation, writing
+
+--> Everyone equally contributed to the assignment :-)
